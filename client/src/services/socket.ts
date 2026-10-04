@@ -3,6 +3,14 @@
 //
 //  Single, shared Socket.IO connection.
 //
+//  Backend URL resolution:
+//    1. import.meta.env.VITE_API_URL  (if set in .env or Vercel)
+//    2. http://localhost:5000         (when running locally)
+//    3. https://youtube-watch-party-lmwi.onrender.com  (production fallback)
+//
+//  So VITE_API_URL is OPTIONAL. Leave it empty and everything
+//  still works locally and in production.
+//
 //  The userId is persisted in localStorage. The socket reads
 //  it FRESH on every connect/reconnect via the `auth` callback,
 //  so calling setUserId() before connecting works correctly.
@@ -11,7 +19,52 @@
 import { io, Socket } from "socket.io-client";
 import { ClientToServerEvents, ServerToClientEvents } from "../types";
 
-const API_URL = import.meta.env.VITE_API_URL ?? "http://localhost:5000";
+// ============================================================
+//  Backend URL resolution
+// ============================================================
+
+const PRODUCTION_BACKEND_URL =
+    "https://youtube-watch-party-lmwi.onrender.com";
+
+function resolveApiUrl(): string {
+    // 1) Explicit env var (works in .env, Vercel, Netlify, Render)
+    const explicit = import.meta.env.VITE_API_URL as string | undefined;
+    if (explicit && explicit.trim().length > 0) {
+        return stripTrailingSlash(explicit.trim());
+    }
+
+    // 2) Local development — detect localhost / LAN IPs
+    if (typeof window !== "undefined") {
+        const host = window.location.hostname;
+        const isLocal =
+            host === "localhost" ||
+            host === "127.0.0.1" ||
+            host === "0.0.0.0" ||
+            host.startsWith("192.168.") ||
+            host.endsWith(".local");
+
+        if (isLocal) {
+            return "http://localhost:5000";
+        }
+    }
+
+    // 3) Production fallback — the deployed Render backend
+    return PRODUCTION_BACKEND_URL;
+}
+
+function stripTrailingSlash(url: string): string {
+    return url.endsWith("/") ? url.slice(0, -1) : url;
+}
+
+export const API_URL = resolveApiUrl();
+
+// Helpful during development — remove or silence in production if noisy.
+// eslint-disable-next-line no-console
+console.log("[socket] backend URL:", API_URL);
+
+// ============================================================
+//  User identity
+// ============================================================
 
 const USER_ID_KEY = "watch-party:userId";
 
@@ -25,6 +78,10 @@ export function getOrCreateUserId(): string {
     }
     return id;
 }
+
+// ============================================================
+//  Socket instance
+// ============================================================
 
 export type AppSocket = Socket<ServerToClientEvents, ClientToServerEvents>;
 
@@ -52,4 +109,12 @@ export function setUserId(id: string): void {
         socket.disconnect();
         socket.connect();
     }
+}
+
+/**
+ * Returns the resolved backend URL. Useful for components that
+ * need to make REST calls (e.g. Home.tsx's createRoom fetch).
+ */
+export function getBackendUrl(): string {
+    return API_URL;
 }

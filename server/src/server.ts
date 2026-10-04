@@ -25,13 +25,18 @@ import { SocketData } from "./types";
 //  Express app
 // ============================================================
 const app = express();
+const allowedOrigins = [
+  "http://localhost:5173",
+  "https://melodic-dusk-c797c9.netlify.app",
+];
 
 app.use(
-    cors({
-        origin: env.CLIENT_URL,
-        credentials: true,
-    })
+  cors({
+    origin: allowedOrigins,
+    credentials: true,
+  })
 );
+
 app.use(express.json({ limit: "100kb" }));
 
 app.get("/api/health", (_req: Request, res: Response) => {

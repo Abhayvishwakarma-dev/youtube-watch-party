@@ -1,14 +1,21 @@
 // ============================================================
 //  Home page: create room OR join room by code.
 //  Persists the username in localStorage for convenience.
+//
+//  Backend URL comes from getBackendUrl() — VITE_API_URL is
+//  optional (see client/src/services/socket.ts for the
+//  resolution logic: env var → localhost:5000 → Render URL).
 // ============================================================
 
 import { useState } from "react";
 import { useNavigate } from "react-router-dom";
-import { getOrCreateUserId, setUserId } from "../services/socket";
+import {
+    getOrCreateUserId,
+    setUserId,
+    getBackendUrl,
+} from "../services/socket";
 
 const USERNAME_KEY = "watch-party:username";
-const API_URL = import.meta.env.VITE_API_URL ?? "http://localhost:5000";
 
 export default function Home() {
     const navigate = useNavigate();
@@ -39,6 +46,9 @@ export default function Home() {
         setError(null);
 
         try {
+            // Resolve backend URL at call time via the shared helper.
+            const API_URL = getBackendUrl();
+
             const res = await fetch(`${API_URL}/api/rooms`, {
                 method: "POST",
                 headers: { "Content-Type": "application/json" },
@@ -123,10 +133,7 @@ export default function Home() {
                 />
 
                 <div className="row">
-                    <button
-                        onClick={handleJoin}
-                        style={{ width: "100%" }}
-                    >
+                    <button onClick={handleJoin} style={{ width: "100%" }}>
                         Join Room
                     </button>
                 </div>
