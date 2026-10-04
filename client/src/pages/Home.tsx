@@ -1,6 +1,13 @@
 // ============================================================
-//  Home page: create room OR join room by code.
-//  Persists the username in localStorage for convenience.
+//  client/src/pages/Home.tsx
+//
+//  Home page — create room OR join room by code.
+//
+//  Auth integration:
+//    - Username comes from useAuth().user (no manual input)
+//    - JWT token is sent in the Authorization header on
+//      POST /api/rooms so the backend can identify the host
+//    - Logout button clears the session
 //
 //  Backend URL comes from getBackendUrl() — VITE_API_URL is
 //  optional (see client/src/services/socket.ts for the
@@ -9,62 +16,59 @@
 
 import { useState } from "react";
 import { useNavigate } from "react-router-dom";
-import {
-    getOrCreateUserId,
-    setUserId,
-    getBackendUrl,
-} from "../services/socket";
-
-const USERNAME_KEY = "watch-party:username";
+import { useAuth } from "../hooks/useAuth";
+import { getBackendUrl } from "../services/socket";
+import { getToken } from "../utils/storage";
 
 export default function Home() {
     const navigate = useNavigate();
-    const [username, setUsername] = useState(
-        () => localStorage.getItem(USERNAME_KEY) ?? ""
-    );
+    const { user, logout } = useAuth();
+
     const [joinCode, setJoinCode] = useState("");
     const [error, setError] = useState<string | null>(null);
     const [busy, setBusy] = useState(false);
 
-    function persistUsername(): boolean {
-        const trimmed = username.trim();
-        if (!trimmed) {
-            setError("Please enter a username.");
-            return false;
-        }
-        if (trimmed.length > 30) {
-            setError("Username must be 30 characters or fewer.");
-            return false;
-        }
-        localStorage.setItem(USERNAME_KEY, trimmed);
-        return true;
+    // ProtectedRoute guarantees `user` is non-null here, but guard
+    // anyway in case this component is ever rendered outside it.
+    if (!user) {
+        return (
+            <div className="loading-screen">
+                Redirecting…
+            </div>
+        );
     }
 
+    // ----------------------------------------------------------
+    //  Create room
+    // ----------------------------------------------------------
     async function handleCreate() {
-        if (!persistUsername()) return;
         setBusy(true);
         setError(null);
 
         try {
-            // Resolve backend URL at call time via the shared helper.
             const API_URL = getBackendUrl();
+            const token = getToken();
 
             const res = await fetch(`${API_URL}/api/rooms`, {
                 method: "POST",
-                headers: { "Content-Type": "application/json" },
-                body: JSON.stringify({ username: username.trim() }),
+                headers: {
+                    "Content-Type": "application/json",
+                    ...(token ? { Authorization: `Bearer ${token}` } : {}),
+                },
+                body: JSON.stringify({ username: user!.username }),
             });
 
             if (!res.ok) {
                 const data = await res.json().catch(() => ({}));
-                throw new Error(data.error ?? "Failed to create room");
+                throw new Error(
+                    (data as any)?.message ??
+                        (data as any)?.error ??
+                        "Failed to create room"
+                );
             }
 
-            const data: { roomId: string; hostId: string } = await res.json();
-
-            // Store the hostId as our userId so the backend recognises us
-            // as host when we join via socket.
-            setUserId(data.hostId);
+            const data: { roomId: string; hostId: string } =
+                await res.json();
 
             navigate(`/room/${data.roomId}`);
         } catch (e: any) {
@@ -74,8 +78,10 @@ export default function Home() {
         }
     }
 
+    // ----------------------------------------------------------
+    //  Join room by code
+    // ----------------------------------------------------------
     function handleJoin() {
-        if (!persistUsername()) return;
         const code = joinCode.trim().toUpperCase();
         if (!code) {
             setError("Please enter a room code.");
@@ -85,12 +91,22 @@ export default function Home() {
             setError("Room codes are 6 characters (A–Z, 0–9).");
             return;
         }
-        // Ensure we have a userId — but do NOT overwrite an existing one,
-        // because the host might be joining their own room from another tab.
-        getOrCreateUserId();
         navigate(`/room/${code}`);
     }
 
+    // ----------------------------------------------------------
+    //  Logout
+    // ----------------------------------------------------------
+    function handleLogout() {
+        if (window.confirm("Log out?")) {
+            logout();
+            navigate("/login", { replace: true });
+        }
+    }
+
+    // ----------------------------------------------------------
+    //  Render
+    // ----------------------------------------------------------
     return (
         <div className="home">
             <div className="home-card">
@@ -99,14 +115,26 @@ export default function Home() {
                     Watch YouTube in perfect sync with friends.
                 </p>
 
-                <label>Username</label>
-                <input
-                    type="text"
-                    placeholder="e.g. Abhay"
-                    value={username}
-                    onChange={(e) => setUsername(e.target.value)}
-                    maxLength={30}
-                />
+                {/* ---------- Signed-in user bar ---------- */}
+                <div className="user-bar">
+                    <div className="user-info">
+                        <span className="user-label">Signed in as</span>
+                        <span className="user-name">{user.username}</span>
+                    </div>
+                    <button
+                        className="small"
+                        onClick={handleLogout}
+                        style={{
+                            background: "transparent",
+                            border: "1px solid var(--border)",
+                            color: "var(--text-dim)",
+                        }}
+                    >
+                        Log out
+                    </button>
+                </div>
+
+                <div className="divider">CREATE</div>
 
                 <div className="row">
                     <button
@@ -121,6 +149,7 @@ export default function Home() {
 
                 <div className="divider">OR</div>
 
+                {/* ---------- Join by code ---------- */}
                 <label>Room Code</label>
                 <input
                     type="text"
@@ -130,10 +159,15 @@ export default function Home() {
                         setJoinCode(e.target.value.toUpperCase().slice(0, 6))
                     }
                     maxLength={6}
+                    disabled={busy}
                 />
 
                 <div className="row">
-                    <button onClick={handleJoin} style={{ width: "100%" }}>
+                    <button
+                        onClick={handleJoin}
+                        style={{ width: "100%" }}
+                        disabled={busy}
+                    >
                         Join Room
                     </button>
                 </div>

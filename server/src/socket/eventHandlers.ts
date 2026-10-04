@@ -21,13 +21,16 @@
 //  Server instance.
 // ============================================================
 
+// ---------- Value imports ----------
 import { Server, Socket } from "socket.io";
 import { Room } from "../models/Room";
 import { Participant } from "../models/Participant";
 import { roomService } from "../services/RoomService";
 import { permissionService } from "../services/PermissionService";
 import { extractYouTubeVideoId } from "../utils/youtube";
-import {
+
+// ---------- Type-only imports (safe in --transpile-only mode) ----------
+import type {
     AssignRolePayload,
     ChangeVideoPayload,
     ChatMessage,
@@ -206,14 +209,6 @@ export function registerEventHandlers(
         if (!roomId || typeof roomId !== "string") {
             return emitError(socket, "ROOM_NOT_FOUND", "Room ID is required.", "join_room");
         }
-        if (!isValidUsername(username)) {
-            return emitError(
-                socket,
-                "INVALID_USERNAME",
-                `Username must be 1–${MAX_USERNAME_LENGTH} characters.`,
-                "join_room"
-            );
-        }
 
         const room = roomService.getRoom(roomId);
         if (!room) {
@@ -221,6 +216,26 @@ export function registerEventHandlers(
         }
 
         const userId = data(socket).userId;
+        const verifiedUsername = data(socket).username;
+
+        // ---------- Resolve the username to use ----------
+        // Priority:
+        //   1. Verified username from the JWT payload (safest)
+        //   2. Client-supplied username (legacy fallback)
+        // Either way, it must pass validation.
+        let finalUsername: string;
+        if (verifiedUsername && isValidUsername(verifiedUsername)) {
+            finalUsername = verifiedUsername.trim();
+        } else if (isValidUsername(username)) {
+            finalUsername = username.trim();
+        } else {
+            return emitError(
+                socket,
+                "INVALID_USERNAME",
+                `Username must be 1–${MAX_USERNAME_LENGTH} characters.`,
+                "join_room"
+            );
+        }
 
         // If socket is already in a different room, leave it first.
         const previousRoomId = data(socket).roomId;
@@ -241,7 +256,7 @@ export function registerEventHandlers(
         const role: Role = userId === room.hostId ? "host" : "participant";
         const participant = new Participant(
             userId,
-            username.trim(),
+            finalUsername,
             role,
             socket.id
         );
@@ -287,7 +302,6 @@ export function registerEventHandlers(
             );
         }
 
-        // Accept optional currentTime from the client for tighter sync.
         let currentTime = room.currentTime;
         if (
             payload &&
@@ -536,10 +550,8 @@ export function registerEventHandlers(
         const targetSocketId = target.socketId;
         const targetSocket = io.sockets.sockets.get(targetSocketId);
 
-        // Remove from room first.
         roomService.removeParticipant(room.roomId, userId);
 
-        // Notify the removed user (before disconnecting them).
         if (targetSocket) {
             targetSocket.emit("participant_removed", {
                 userId: target.userId,
@@ -550,7 +562,6 @@ export function registerEventHandlers(
             targetSocket.leave(room.roomId);
             targetSocket.data.roomId = undefined;
 
-            // Disconnect after a small delay to allow the event to flush.
             setTimeout(() => {
                 try {
                     targetSocket.disconnect(true);
@@ -560,7 +571,6 @@ export function registerEventHandlers(
             }, 200);
         }
 
-        // Broadcast to remaining participants.
         io.to(room.roomId).emit("user_left", {
             userId: target.userId,
             username: target.username,
@@ -644,7 +654,6 @@ export function registerEventHandlers(
             timestamp: Date.now(),
         };
 
-        // Broadcast to everyone in the room, including the sender.
         io.to(room.roomId).emit("new_message", msg);
     });
 
@@ -667,7 +676,6 @@ export function registerEventHandlers(
             timestamp: Date.now(),
         };
 
-        // Broadcast to everyone in the room, including the sender.
         io.to(room.roomId).emit("new_reaction", reaction);
     });
 
@@ -680,7 +688,7 @@ export function registerEventHandlers(
 
         const { participant } = removed;
         const room = roomService.getRoom(removed.room.roomId);
-        if (!room) return; // room was deleted (was empty)
+        if (!room) return;
 
         io.to(room.roomId).emit("user_left", {
             userId: participant.userId,
@@ -689,7 +697,6 @@ export function registerEventHandlers(
             hostId: room.hostId,
         });
 
-        // If the host changed due to this disconnect, broadcast the role change.
         if (participant.role === "host" && room.hostId !== participant.userId) {
             const newHost = room.getParticipant(room.hostId);
             if (newHost) {
@@ -731,8 +738,6 @@ function leaveCurrentRoom(io: TypedServer, socket: TypedSocket): void {
         hostId: room.hostId,
     });
 
-    // If the leaving user was the host and a new host was auto-promoted,
-    // broadcast the role change so clients update the UI.
     if (participant.role === "host" && room.hostId !== participant.userId) {
         const newHost = room.getParticipant(room.hostId);
         if (newHost) {

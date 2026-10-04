@@ -3,21 +3,22 @@
 //
 //  Single, shared Socket.IO connection.
 //
+//  Handshake auth: sends the JWT from localStorage. The backend
+//  verifies it and derives the user's identity from the token,
+//  which is what makes the room creator the host.
+//
 //  Backend URL resolution:
-//    1. import.meta.env.VITE_API_URL  (if set in .env or Vercel)
-//    2. http://localhost:5000         (when running locally)
-//    3. https://youtube-watch-party-lmwi.onrender.com  (production fallback)
+//    1. import.meta.env.VITE_API_URL    (if set in .env or Vercel)
+//    2. http://localhost:5000           (when running locally)
+//    3. Render fallback URL             (production default)
 //
 //  So VITE_API_URL is OPTIONAL. Leave it empty and everything
 //  still works locally and in production.
-//
-//  The userId is persisted in localStorage. The socket reads
-//  it FRESH on every connect/reconnect via the `auth` callback,
-//  so calling setUserId() before connecting works correctly.
 // ============================================================
 
 import { io, Socket } from "socket.io-client";
 import { ClientToServerEvents, ServerToClientEvents } from "../types";
+import { getToken } from "../utils/storage";
 
 // ============================================================
 //  Backend URL resolution
@@ -58,26 +59,8 @@ function stripTrailingSlash(url: string): string {
 
 export const API_URL = resolveApiUrl();
 
-// Helpful during development — remove or silence in production if noisy.
 // eslint-disable-next-line no-console
 console.log("[socket] backend URL:", API_URL);
-
-// ============================================================
-//  User identity
-// ============================================================
-
-const USER_ID_KEY = "watch-party:userId";
-
-/** Reads (or creates) the persistent user ID for this browser. */
-export function getOrCreateUserId(): string {
-    let id = localStorage.getItem(USER_ID_KEY);
-    if (!id || !/^user_[a-z0-9]{6,32}$/.test(id)) {
-        const rand = Math.random().toString(36).slice(2, 12);
-        id = `user_${rand}`;
-        localStorage.setItem(USER_ID_KEY, id);
-    }
-    return id;
-}
 
 // ============================================================
 //  Socket instance
@@ -87,28 +70,30 @@ export type AppSocket = Socket<ServerToClientEvents, ClientToServerEvents>;
 
 // NOTE: `auth` is a FUNCTION, not an object.
 // Socket.IO calls it fresh on every connect/reconnect, so it always
-// reads the latest userId from localStorage — no stale values.
+// reads the LATEST token from localStorage — no stale values.
 export const socket: AppSocket = io(API_URL, {
     autoConnect: false,
     transports: ["websocket", "polling"],
     auth: (cb) => {
-        cb({ userId: getOrCreateUserId() });
+        const token = getToken();
+        // eslint-disable-next-line no-console
+        console.log("[socket] handshake auth:", {
+            hasToken: !!token,
+            tokenPreview: token ? token.slice(0, 20) + "…" : null,
+        });
+        cb({ token: token ?? undefined });
     },
 });
 
 /**
- * Overwrites the persistent userId. If the socket is already
- * connected with the old id, it reconnects to apply the new one.
+ * Force a reconnect so the next handshake picks up the latest
+ * auth token. Call this after login / logout / token refresh.
  */
-export function setUserId(id: string): void {
-    localStorage.setItem(USER_ID_KEY, id);
-
-    // If we're already connected, force a reconnect so the handshake
-    // sends the new userId.
+export function reconnectSocket(): void {
     if (socket.connected) {
         socket.disconnect();
-        socket.connect();
     }
+    socket.connect();
 }
 
 /**

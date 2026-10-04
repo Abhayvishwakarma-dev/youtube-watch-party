@@ -1,65 +1,95 @@
 // ============================================================
 //  server/src/socket/socketHandler.ts
 //
-//  Attaches Socket.IO lifecycle handling:
-//    1. Handshake middleware — assign a persistent userId
-//       to every connecting socket (from auth.userId if present,
-//       otherwise a freshly generated one).
-//    2. On each connection, delegate the event wiring to
-//       registerEventHandlers(io, socket).
+//  Socket.IO handshake middleware + connection handler.
 //
-//  Strongly typed via the event maps declared in eventHandlers.ts
-//  so that event names and payloads are checked at compile time.
+//  Auth resolution order:
+//    1. JWT token (auth.token)     → verify → socket.data from payload
+//    2. Legacy userId (auth.userId) → dev migration fallback
+//    3. Dev-only                  → throwaway id
 // ============================================================
 
+import { registerEventHandlers } from "./eventHandlers";
+import { verifyToken } from "../utils/jwt";
 import { generateUserId } from "../utils/roomId";
-import {
-    registerEventHandlers,
-    TypedServer,
-    TypedSocket,
-} from "./eventHandlers";
+import type { TypedServer, TypedSocket } from "./eventHandlers";
+import type { SocketAuth, SocketData } from "../types";
 
-// ============================================================
-//  setupSocketHandlers
-// ============================================================
 export function setupSocketHandlers(io: TypedServer): void {
     // ---------------------------------------------------------
     //  Handshake middleware
-    //  Runs once per socket, before the "connection" event fires.
-    //  The client may supply a userId via `auth.userId`
-    //  (persisted in localStorage on the frontend).
     // ---------------------------------------------------------
     io.use((socket, next) => {
-        const auth = (socket.handshake.auth ?? {}) as { userId?: string };
-        const incoming = auth.userId;
+        const auth = (socket.handshake.auth ?? {}) as SocketAuth;
+        const sData = socket.data as SocketData;
 
-        let userId: string;
-        if (
-            typeof incoming === "string" &&
-            /^user_[a-z0-9]{6,32}$/.test(incoming)
-        ) {
-            userId = incoming;
-        } else {
-            userId = generateUserId();
+        // ---------- 1. Preferred: JWT token ----------
+        if (typeof auth.token === "string" && auth.token.length > 0) {
+            const payload = verifyToken(auth.token);
+
+            if (!payload) {
+                return next(
+                    new Error("Unauthorized: invalid or expired token")
+                );
+            }
+
+            sData.userId = payload.userId;
+            sData.username = payload.username;
+            sData.email = payload.email;
+            sData.roomId = undefined;
+
+            // eslint-disable-next-line no-console
+            console.log(
+                `[socket] handshake OK (JWT) user=${payload.userId} (${payload.username})`
+            );
+            return next();
         }
 
-        socket.data.userId = userId;
-        socket.data.roomId = undefined;
+        // ---------- 2. Legacy fallback: raw userId ----------
+        if (typeof auth.userId === "string" && auth.userId.length > 0) {
+            if (!/^user_[a-z0-9]{6,32}$/.test(auth.userId)) {
+                return next(new Error("Unauthorized: bad legacy userId"));
+            }
 
-        next();
+            sData.userId = auth.userId;
+            sData.username = undefined;
+            sData.email = undefined;
+            sData.roomId = undefined;
+
+            // eslint-disable-next-line no-console
+            console.warn(
+                `[socket] handshake OK (LEGACY userId) user=${auth.userId}`
+            );
+            return next();
+        }
+
+        // ---------- 3. Dev fallback ----------
+        if (process.env.NODE_ENV !== "production") {
+            const temp = generateUserId();
+            sData.userId = temp;
+            sData.roomId = undefined;
+            // eslint-disable-next-line no-console
+            console.warn(`[socket] handshake OK (DEV fallback) user=${temp}`);
+            return next();
+        }
+
+        // eslint-disable-next-line no-console
+        console.warn("[socket] handshake REJECTED — no auth token");
+        return next(new Error("Unauthorized"));
     });
 
     // ---------------------------------------------------------
     //  Connection handler
-    //  Fires after the middleware calls next() successfully.
     // ---------------------------------------------------------
     io.on("connection", (socket: TypedSocket) => {
+        const sData = socket.data as SocketData;
         // eslint-disable-next-line no-console
         console.log(
-            `[socket] connect ${socket.id} (user=${socket.data.userId})`
+            `[socket] connect ${socket.id} user=${sData.userId} (${
+                sData.username ?? "no-username"
+            })`
         );
 
-        // Wire all client→server events (join_room, play, pause, ...)
         registerEventHandlers(io, socket);
     });
 }

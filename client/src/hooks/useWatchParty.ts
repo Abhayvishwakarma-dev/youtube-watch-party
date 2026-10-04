@@ -1,17 +1,21 @@
 // ============================================================
-//  Central hook that owns:
-//    - the Socket.IO lifecycle for a room
-//    - the room state (videoId, currentTime, playState)
-//    - the participant list and current user
-//    - chat messages and reactions
-//    - emitted actions (play, pause, seek, change_video, …)
+//  client/src/hooks/useWatchParty.ts
 //
-//  This is the single source of truth for the Room page.
+//  Central hook for the Room page. Owns:
+//    - Socket.IO lifecycle for a room
+//    - Room state (videoId, currentTime, playState)
+//    - Participant list, chat messages, reactions
+//    - Emitted actions (play, pause, seek, change_video, …)
+//
+//  User identity comes from useAuth().user.userId — the same
+//  verified userId the backend associates with the JWT. This is
+//  what makes the room creator the host.
 // ============================================================
 
 import { useCallback, useEffect, useRef, useState } from "react";
 import { useNavigate } from "react-router-dom";
-import { socket, getOrCreateUserId } from "../services/socket";
+import { socket } from "../services/socket";
+import { useAuth } from "./useAuth";
 import type {
     ChatMessage,
     ErrorPayload,
@@ -39,7 +43,6 @@ export interface UseWatchPartyResult {
     error: string | null;
     messages: ChatMessage[];
     reactions: ReactionBroadcast[];
-    // Actions
     play: (currentTime?: number) => void;
     pause: (currentTime?: number) => void;
     seek: (time: number) => void;
@@ -57,7 +60,12 @@ export function useWatchParty(
     username: string
 ): UseWatchPartyResult {
     const navigate = useNavigate();
-    const userId = getOrCreateUserId();
+    const { user } = useAuth();
+
+    // ★ userId comes from the authenticated user — same value the
+    // backend has on socket.data.userId (from JWT). This is what
+    // makes host detection work.
+    const userId = user?.userId ?? "";
 
     const [connected, setConnected] = useState(false);
     const [joined, setJoined] = useState(false);
@@ -70,17 +78,18 @@ export function useWatchParty(
     const [messages, setMessages] = useState<ChatMessage[]>([]);
     const [reactions, setReactions] = useState<ReactionBroadcast[]>([]);
 
-    // Prevent duplicate joins on React StrictMode double-invoke.
     const joinedOnceRef = useRef(false);
 
-    // ---------- Wire socket listeners once ----------
+    // ---------- Wire socket listeners ----------
     useEffect(() => {
-        if (!roomId || !username) return;
+        if (!roomId || !userId) return;
 
         function onConnect() {
             setConnected(true);
             if (!joinedOnceRef.current) {
                 joinedOnceRef.current = true;
+                // Username is optional now — backend prefers the
+                // verified JWT username when present.
                 socket.emit("join_room", { roomId, username });
             }
         }
@@ -127,7 +136,6 @@ export function useWatchParty(
             participants: PublicParticipant[];
         }) {
             if (payload.userId === userId) {
-                // We were removed → kick out.
                 socket.disconnect();
                 navigate("/", { replace: true });
                 return;
@@ -148,20 +156,15 @@ export function useWatchParty(
             window.setTimeout(() => setError(null), 5000);
         }
 
-        // ---------- Chat ----------
         function onNewMessage(msg: ChatMessage) {
             setMessages((prev) => {
                 const next = [...prev, msg];
-                // Keep only the last 100 messages in memory.
                 return next.length > 100 ? next.slice(-100) : next;
             });
         }
 
-        // ---------- Reactions ----------
         function onNewReaction(r: ReactionBroadcast) {
             setReactions((prev) => [...prev, r]);
-
-            // Auto-remove this reaction after its float animation ends (~3s).
             window.setTimeout(() => {
                 setReactions((prev) => prev.filter((x) => x.id !== r.id));
             }, 3000);
@@ -198,7 +201,6 @@ export function useWatchParty(
             socket.off("new_message", onNewMessage);
             socket.off("new_reaction", onNewReaction);
 
-            // Leave the room but keep the socket open for future use.
             if (socket.connected) {
                 socket.emit("leave_room", { roomId });
             }
